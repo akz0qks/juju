@@ -1,0 +1,145 @@
+--[=[
+    RakNet Backtrack Script
+    You must customize readPlayerId, readPosition, writePosition functions
+    and set packet ids according to the game.
+]=]
+
+local players = game:GetService("Players")
+local runService = game:GetService("RunService")
+local uis = game:GetService("UserInputService")
+local localPlayer = players.LocalPlayer
+
+-- ===== CONFIGURATION =====
+local BACKTRACK_TIME = 1.0          -- backtrack window (seconds)
+local MOVEMENT_PACKET_ID = 0x1B      -- packet ID for player movement
+local ATTACK_PACKET_ID = 0x??        -- replace with actual weapon/attack packet ID
+local TOGGLE_KEY = Enum.KeyCode.B     -- toggle key
+
+-- Function to read playerId from movement packet buffer
+local function readPlayerIdFromBuffer(buf)
+    -- TODO: analyse real packet structure
+    -- assume playerId is a uint32 at offset 1
+    return buffer.readu32(buf, 1)
+end
+
+-- Function to read position (Vector3) from movement packet buffer
+local function readPositionFromBuffer(buf)
+    -- TODO: analyse real packet structure
+    -- assume x,y,z as floats at offsets 5,9,13
+    local x = buffer.readfloat(buf, 5)
+    local y = buffer.readfloat(buf, 9)
+    local z = buffer.readfloat(buf, 13)
+    return Vector3.new(x, y, z)
+end
+
+-- Function to write target position into attack packet buffer
+local function writeTargetPosition(buf, pos)
+    -- TODO: analyse attack packet structure
+    -- assume target position at offsets 10,14,18
+    buffer.writefloat(buf, 10, pos.X)
+    buffer.writefloat(buf, 14, pos.Y)
+    buffer.writefloat(buf, 18, pos.Z)
+end
+
+-- Function to map playerId → Player object (may need game-specific logic)
+local function getIdToPlayer(id)
+    -- simple approach: loop through players and compare UserId
+    -- but movement packet may use NetId instead of UserId
+    for _, plr in ipairs(players:GetPlayers()) do
+        if plr.UserId == id then  -- or plr.NetworkId == id
+            return plr
+        end
+    end
+    return nil
+end
+-- =========================
+
+-- State
+local enabled = false
+local history = {}          -- player → { {time, pos}, ... }
+
+-- Add position to history
+local function addToHistory(player, pos, time)
+    if not history[player] then
+        history[player] = {}
+    end
+    local hist = history[player]
+    table.insert(hist, {time = time, pos = pos})
+
+    -- remove entries older than BACKTRACK_TIME
+    local cutoff = time - BACKTRACK_TIME
+    while #hist > 0 and hist[1].time < cutoff do
+        table.remove(hist, 1)
+    end
+end
+
+-- Get backtracked position for a player (oldest in window)
+local function getBacktrackPosition(player)
+    local hist = history[player]
+    if not hist or #hist == 0 then return nil end
+    return hist[1].pos  -- oldest position
+end
+
+-- Receive hook: intercept movement packets of other players
+local function onReceive(packet)
+    if not enabled then return end
+    if packet.PacketId ~= MOVEMENT_PACKET_ID then return end
+
+    local buf = packet.AsBuffer
+    local playerId = readPlayerIdFromBuffer(buf)
+    local pos = readPositionFromBuffer(buf)
+    local player = getIdToPlayer(playerId)
+
+    if player and player ~= localPlayer then
+        addToHistory(player, pos, os.clock())
+    end
+end
+
+-- Send hook: intercept attack packets and modify target position
+local function onSend(packet)
+    if not enabled then return end
+    if packet.PacketId ~= ATTACK_PACKET_ID then return end
+
+    local buf = packet.AsBuffer
+    -- we need to know which player is being targeted (you must find that offset)
+    local targetId = readTargetIdFromAttackPacket(buf)  -- you must implement this
+    local targetPlayer = getIdToPlayer(targetId)
+    if not targetPlayer then return end
+
+    local backtrackPos = getBacktrackPosition(targetPlayer)
+    if backtrackPos then
+        -- overwrite target position in the packet
+        writeTargetPosition(buf, backtrackPos)
+        packet:SetData(buf)
+        -- optional: print feedback
+        print("backtrack applied for", targetPlayer.Name)
+    end
+end
+
+-- Dummy placeholder for reading target id from attack packet – you must implement
+local function readTargetIdFromAttackPacket(buf)
+    -- TODO: find where the target player id is stored
+    -- assume uint32 at offset 5
+    return buffer.readu32(buf, 5)
+end
+
+-- Toggle on key press
+uis.InputBegan:Connect(function(input)
+    if input.KeyCode == TOGGLE_KEY then
+        enabled = not enabled
+        if enabled then
+            print("backtrack enabled")
+            raknet.add_receive_hook(onReceive)
+            raknet.add_send_hook(onSend)
+        else
+            print("backtrack disabled")
+            raknet.remove_receive_hook(onReceive)
+            raknet.remove_send_hook(onSend)
+        end
+    end
+end)
+
+-- Clean up history when a player leaves
+players.PlayerRemoving:Connect(function(plr)
+    history[plr] = nil
+end)
