@@ -1,4 +1,5 @@
 repeat task["wait"]() until game:IsLoaded()
+
 if (identifyexecutor() == "AWP" or identifyexecutor() == "Nihon") then
     cleardrawcache()
 end
@@ -19285,7 +19286,7 @@ do
     local fov_circle_outline = nil
     local shoot = nil
     
-    --[[
+    
     do
         for _, new_upvalue in getupvalues(rawget(require(replicated_storage["Modules"]["GunHandler"]), "shoot")) do
             if type(new_upvalue) == "function" and getinfo(new_upvalue) and getinfo(new_upvalue)["name"] == "shoot" then
@@ -19299,7 +19300,7 @@ do
             return
         end
     end
-    ]]
+    
 
     local get_closest_to_mouse_position = LPH_NO_VIRTUALIZE(function(dt, hrp)
         local mouse_pos = get_mouse_location(user_input_service)
